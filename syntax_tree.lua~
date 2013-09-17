@@ -1,0 +1,37 @@
+local m = {}
+
+function m.create()
+	return {}
+end
+
+function m.get_left(node)
+	if node.left == nil then
+		node.left = {}
+
+	return node.left
+end
+
+function m.get_right(node)
+	if node.right == nil then
+		node.right = {}
+
+	return node.right
+end
+
+--inorder traverse iterator
+local function tree_iter(state, node)
+	if(state == 1) then
+		return node
+	elseif(state == 2) then
+		return node.left
+	elseif(state == 3) then
+		return node.right
+	assert(nil, string.format("Unexpected state: %s", state))
+	
+end
+
+function m.all_children(tree)
+	
+end
+
+return m
