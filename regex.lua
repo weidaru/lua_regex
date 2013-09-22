@@ -95,32 +95,41 @@ local function try_reduce(s)
 	end
 end
 
-local function build_tree(node_list)
-	local dump_node_list = function(list)
-		local str = ""
-		for _,v in ipairs(list) do
-			str = str .. v[0] .. v[1] .."\n"
+local dump_node_list = function(list)
+	local find_key = function(t, value)
+		for k,v in pairs(t) do
+			if v == value then
+				return k
+			end
 		end
-		return str
+		error("No key corresponding to value.")
 	end
 
+	local str = ""
+	for _,v in ipairs(list) do
+		str = str .. find_key(v[0]) .. v[1] .."\n"
+	end
+	return str
+end
+
+local function build_tree(node_list)
 	local s = stack.new_stack()
-	local leaf_type = {node_type.CHAR="", node_type.DOT=""}
-	local unary_type = {node_type.GROUP="", node_type.POST=""}
-	local binary_type = {node_type.SPLIT="", node_type.CAT=""}
+	local leaf_type = {[node_type.CHAR]="", [node_type.DOT]=""}
+	local unary_type = {[node_type.GROUP]="", [node_type.POST]=""}
+	local binary_type = {[node_type.SPLIT]="", [node_type.CAT]=""}
 	for i=1,#node_list,1 do
 		local cur = node_list[i]
-		if unary_type[cur[1]] ~= nil		--unary node type
+		if unary_type[cur[1]] ~= nil then		--unary node type
 			local temp = stack.pop(s)
 			assert(temp, "Error when building trees.\n" .. dump_node_list(node_list))
 			stack.push(s, {["type"]=cur[1], ["data"]=cur[2], ["left"]=temp})
-		elseif binary_type[cur[1]] ~= nil	--binary node type
+		elseif binary_type[cur[1]] ~= nil then	--binary node type
 			local temp1 = stack.pop()
 			local temp2 = stack.pop()
 			assert(temp1, "Error when building trees.\n" .. dump_node_list(node_list))
 			assert(temp2, "Error when building trees.\n" .. dump_node_list(node_list))
 			stack.push(s, {["type"]=cur[1], ["data"]=cur[2], ["left"]=temp1, ["right"]=temp2})
-		elseif leaf_type[cur[1]] ~= nil		--leaf node type
+		elseif leaf_type[cur[1]] ~= nil	then	--leaf node type
 			stack.push(s, {["type"]=cur[1], ["data"]=cur[2]})
 		else
 			error(string.format("Unknown node type %s", cur[0]))
@@ -140,18 +149,21 @@ local function parse(input)
 		local c = string.sub(input, i, i)
 		local lexval = {lexer(c)}
 		stack.push(s, lexval)
-		while true
+		while true do
 			local node = try_reduce(s)
-			if node == nil 
+			if node == nil then
 				break
+			end
 			table.insert(node_list, #node_list+1, node)
 		end
 	end
 	stack.push(s, {token.END})
 	try_reduce(s)
-	if(stack.peek(s)[1] != nonterminal.S)
+	if stack.peek(s)[1] ~= nonterminal.S then
 		return nil
+	end
 	--build the tree
+	print("Node list is \n" .. dump_node_list(node_list))
 	return build_tree(node_list)
 end
 
@@ -166,10 +178,6 @@ end
 
 function m.partial_math(regex, input)
 	--stub
-end
-
-for t, d in lexer("someth+*in?g()") do
-	print(t, d)
 end
 
 --return the module
