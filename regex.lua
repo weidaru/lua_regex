@@ -18,15 +18,13 @@ E->'.'
 --The module table.
 local m = {}
 
---Token table.
-local node_type = {CHAR=1, SPLIT=2, GROUP=3, POST=4, DOT=5, CAT=6}
-local token = {CHAR=1, POSTFIX=2, END=3}
-local non_terminal = {S=1, E=2}
 local util= require("utility")
 local stack = require("stack")
-util.immutable_table(node_type)
-util.immutable_table(token)
-util.immutable_table(non_terminal)
+
+--Token table.
+local node_type = util.immutable_table({CHAR=1, SPLIT=2, GROUP=3, POST=4, DOT=5, CAT=6})
+local token = util.immutable_table({CHAR=1, POSTFIX=2, END=3, S=4, E=5})
+
 
 local function lexer(c)
 	local temp = c
@@ -47,47 +45,51 @@ end
 --Do everything manually instead of using a parsing table which could be complicated and hard to debug
 local function try_reduce(s)
 	local p = stack.peek(s)
-	if p[1] == token.CHAR then			-- E->CHAR
+	if(p == nil) then
+		return nil
+	end
+	
+	if p[1] == token.CHAR then							-- E->CHAR
 		stack.pop(s)
-		stack.push({non_terminal.E})		
+		stack.push(s, {token.E})		
 		return {node_type.CHAR, p[2]}
-	elseif p[1] == "." then				-- E->'.'
+	elseif p[1] == "." then								-- E->'.'
 		stack.pop(s)
-		stack.push({non_terminal.E})
+		stack.push(s, {token.E})
 		return {node_type.DOT}
-	elseif p[1] == token.POSTFIX then	-- E->E POSTFIX
-		if s[#s-1][1] == non_terminal.E then
+	elseif p[1] == token.POSTFIX then					-- E->E POSTFIX
+		if s[#s-1][1] == token.E then
 			stack.pop(s)
 			stack.pop(s)
-			stack.push(s, {non_terminal.E})
+			stack.push(s, {token.E})
 			return {node_type.POST, p[2]}
 		end
-	elseif p[1] == ")" then				-- E->'(' E ')'
-		if s[#s-1][1]==non_terminal.E and s[#-2][1]=="(" then
+	elseif p[1] == ")" then								-- E->'(' E ')'
+		if #s>=3 and s[#s-1][1]==token.E and s[#s-2][1]=="(" then
 			stack.pop(s)
 			stack.pop(s)
 			stack.pop(s)
-			stack.push(s, {non_terminal.E})
+			stack.push(s, {token.E})
 			return {node_type.GROUP}
 		end
-	elseif p[1] == non_terminal.E then	--E-> E '|' E
-		if s[#s-1][1] == "|" and s[#s-2][1] == non_terminal.E then
+	elseif p[1] == token.E then							--E-> E '|' E
+		if #s>=3 and s[#s-1][1] == "|" and s[#s-2][1] == token.E then
 			stack.pop(s)
 			stack.pop(s)
 			stack.pop(s)
-			stack.push(s, {non_terminal.E})
+			stack.push(s, {token.E})
 			return {node_type.SPLIT}
-		elseif s[#s-1][1] == non_terminal.E then
+		elseif #s>=2 and s[#s-1][1] == token.E then		--E-> E E
 			stack.pop(s)
 			stack.pop(s)
-			stack.push(s, {non_terminal.E})
+			stack.push(s, {token.E})
 			return {node_type.CAT}
 		end
 	elseif p[1] == token.END then
-		if #s == 2 and s[#s-1][1] == non_terminal.E then
+		if #s == 2 and s[#s-1][1] == token.E then
 			stack.pop(s)
 			stack.pop(s)
-			stack.push(s, {non_terminal.S})
+			stack.push(s, {token.S})
 			return nil
 		end
 	else
@@ -95,21 +97,28 @@ local function try_reduce(s)
 	end
 end
 
-local dump_node_list = function(list)
+local function dump_node_list(list)
 	local find_key = function(t, value)
 		for k,v in pairs(t) do
 			if v == value then
 				return k
 			end
 		end
-		error("No key corresponding to value.")
+		error(string.format("No key corresponding to value. %s", value))
 	end
 
 	local str = ""
 	for _,v in ipairs(list) do
-		str = str .. find_key(v[0]) .. v[1] .."\n"
+		str = string.format("%s%s\t%s\n", str, find_key(node_type, v[1]), v[2])
 	end
 	return str
+end
+
+local function dump_stack(stack)
+	local str = ""
+	for _,v in ipairs(stack) do
+		str = string.format("%s%d\t", str, v[1])
+	end
 end
 
 local function build_tree(node_list)
@@ -124,8 +133,8 @@ local function build_tree(node_list)
 			assert(temp, "Error when building trees.\n" .. dump_node_list(node_list))
 			stack.push(s, {["type"]=cur[1], ["data"]=cur[2], ["left"]=temp})
 		elseif binary_type[cur[1]] ~= nil then	--binary node type
-			local temp1 = stack.pop()
-			local temp2 = stack.pop()
+			local temp1 = stack.pop(s)
+			local temp2 = stack.pop(s)
 			assert(temp1, "Error when building trees.\n" .. dump_node_list(node_list))
 			assert(temp2, "Error when building trees.\n" .. dump_node_list(node_list))
 			stack.push(s, {["type"]=cur[1], ["data"]=cur[2], ["left"]=temp1, ["right"]=temp2})
@@ -141,7 +150,7 @@ end
 --Parse the regex input into syntax tree.
 local function parse(input)
 	local s  = stack.new_stack()
-	--ndoe list is built such that the node appears in reverse polish notation.
+	--node list is built such that the node appears in reverse polish notation.
 	local node_list = {}
 	
 	--shift each iteration
@@ -159,7 +168,8 @@ local function parse(input)
 	end
 	stack.push(s, {token.END})
 	try_reduce(s)
-	if stack.peek(s)[1] ~= nonterminal.S then
+	
+	if stack.peek(s)[1] ~= token.S then
 		return nil
 	end
 	--build the tree
@@ -180,8 +190,10 @@ function m.partial_math(regex, input)
 	--stub
 end
 
---return the module
+--test code, delete later.
+parse("a++")
 
+--return the module
 return m
 
 
