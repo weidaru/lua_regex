@@ -24,6 +24,7 @@ local stack = require("stack")
 --Token table.
 local node_type = util.immutable_table({CHAR=1, SPLIT=2, GROUP=3, POST=4, DOT=5, CAT=6})
 local token = util.immutable_table({CHAR=1, POSTFIX=2, END=3, S=4, E=5})
+local op_code = util.immutable_table({CHAR=1, BRANCH=2, ACCEPT=3, ANY=4, SAVE=5})
 
 
 local function lexer(c)
@@ -97,16 +98,16 @@ local function try_reduce(s)
 	end
 end
 
-local function dump_node_list(list)
-	local find_key = function(t, value)
-		for k,v in pairs(t) do
-			if v == value then
-				return k
-			end
+local function find_key(t, value)
+	for k,v in pairs(t) do
+		if v == value then
+			return k
 		end
-		error(string.format("No key corresponding to value. %s", value))
 	end
+	error(string.format("No key corresponding to value. %s", value))
+end
 
+local function dump_node_list(list)
 	local str = ""
 	for _,v in ipairs(list) do
 		str = string.format("%s%s\t%s\n", str, find_key(node_type, v[1]), v[2])
@@ -119,6 +120,36 @@ local function dump_stack(stack)
 	for _,v in ipairs(stack) do
 		str = string.format("%s%d\t", str, v[1])
 	end
+end
+
+local function dump_tree(tree)
+	local function _dump_tree(node)
+		if node then
+			local left_str = _dump_tree(node.left)
+			local right_str = _dump_tree(node.right)
+			
+			if left_str == nil and right_str == nil then
+				return string.format("(%s)",find_key(node_type, node.type))
+			elseif right_str == nil then
+				return string.format("(%s %s)",find_key(node_type, node.type), left_str)
+			else
+				return string.format("(%s %s %s)",find_key(node_type, node.type), left_str, right_str)
+			end
+			assert(false)
+		else 
+			return nil
+		end
+	end
+	
+	return _dump_tree(tree)
+end
+
+local function dump_program(program)
+	local str=""
+	for i,inst in ipairs(program) do
+		str = string.format("%s%d:\t%s %s %s\n", str, i, find_key(op_code, inst[1]), inst[2], inst[3])
+	end
+	return str
 end
 
 local function build_tree(node_list)
@@ -137,14 +168,15 @@ local function build_tree(node_list)
 			local temp2 = stack.pop(s)
 			assert(temp1, "Error when building trees.\n" .. dump_node_list(node_list))
 			assert(temp2, "Error when building trees.\n" .. dump_node_list(node_list))
-			stack.push(s, {["type"]=cur[1], ["data"]=cur[2], ["left"]=temp1, ["right"]=temp2})
+			stack.push(s, {["type"]=cur[1], ["data"]=cur[2], ["left"]=temp2, ["right"]=temp1})
 		elseif leaf_type[cur[1]] ~= nil	then	--leaf node type
 			stack.push(s, {["type"]=cur[1], ["data"]=cur[2]})
 		else
 			error(string.format("Unknown node type %s", cur[0]))
 		end
 	end
-	return nil
+	assert(#s == 1)
+	return s[1]
 end
 
 --Parse the regex input into syntax tree.
@@ -173,17 +205,88 @@ local function parse(input)
 		return nil
 	end
 	--build the tree
-	print("Node list is \n" .. dump_node_list(node_list))
-	return build_tree(node_list)
+	local tree = build_tree(node_list)
+	--print(dump_tree(tree))
+	return tree
 end
 
 --Compile the syntax tree into bytecode.
 local function compile(ast)
-	
+	--merge the second list into the first
+	local function merge(first, second)
+		for i=1,#second,1 do
+			table.insert(first, #first+1, second[i])
+		end
+	end
+
+	local group_count = 0
+	local function _compile(node)
+		if node.type == node_type.CHAR then
+			local program = {}
+			program[1] = {op_code.CHAR, node.data}
+			return program
+		elseif node.type == node_type.DOT then
+			local program = {}
+			program[1] = {op_code.ANY}
+			return program
+		elseif node.type == node_type.CAT then
+			local first = _compile(node.left)
+			local second = _compile(node.right)
+			merge(first, second)
+			return first
+		elseif node.type == node_type.GROUP then
+			local program = {}
+			program[1] = {op_code.SAVE, group_count*2+1}
+			local sub = _compile(node.left)
+			merge(program, sub)
+			program[#program+1] = {op_code.SAVE, group_count*2+2}
+			group_count = group_count+1
+			return program
+		elseif node.type == node_type.POST then
+			local program = {}
+			local sub = _compile(node.left)
+			if node.data == "+" then
+				merge(program, sub)
+				table.insert(program, #program+1, {op_code.BRANCH, -#sub, 1})
+			elseif node.data == "?" then
+				table.insert(program, #program+1, {op_code.BRANCH, 1, #sub+1})
+				merge(program, sub)
+			elseif node.data == "*" then
+				table.insert(program, #program+1, {op_code.BRANCH, 0, #sub+1})
+			else
+				error("Unknown symbol for POSTFIX token. ".. node.data)
+			end
+			return program
+		elseif node.type == node_type.SPLIT then
+			local program = {}
+			local sub1 = _compile(node.left)
+			local sub2 = _compile(node.right)
+			table.insert(program, #program+1, {op_code.BRANCH, 1, #sub1+2})
+			merge(program, sub1)
+			table.insert(program, #program+1, {op_code.BRANCH, #sub2+1})
+			merge(program, sub2)
+			return program
+		else
+			error("Unknown node type. " .. find_key(node_type, node.type))
+		end
+	end
+
+	local program = _compile(ast)
+	table.insert(program, #program+1, {op_code.ACCEPT})
+	return program
 end
 
-function m.full_match(regex, input) 
-	--stub
+function m.full_match(regex, input)
+	local program = 0
+	if type(regex) == "string" then
+		local ast = parse(regex)
+		program = compile(ast)
+	elseif type(regex) == "table" then
+		program = regex
+	else
+		error("Bad input, regex")
+	end
+	
 end
 
 function m.partial_math(regex, input)
@@ -191,7 +294,9 @@ function m.partial_math(regex, input)
 end
 
 --test code, delete later.
-parse("a++")
+local ast = parse("(a+)|(b|c)")
+local program = compile(ast)
+print(dump_program(program))
 
 --return the module
 return m
