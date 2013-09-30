@@ -43,7 +43,10 @@ local function lexer(c)
 	return t, temp
 end
 
---Do everything manually instead of using a parsing table which could be complicated and hard to debug
+--[[
+Do everything manually instead of using a parsing table which could be complicated and hard to debug
+Look ahead is not implemented.
+]]--
 local function try_reduce(s)
 	local p = stack.peek(s)
 	if(p == nil) then
@@ -147,7 +150,23 @@ end
 local function dump_program(program)
 	local str=""
 	for i,inst in ipairs(program) do
-		str = string.format("%s%d:\t%s %s %s\n", str, i, find_key(op_code, inst[1]), inst[2], inst[3])
+		if i == #program then
+			str = string.format("%s%d:\t%s %s %s", str, i, find_key(op_code, inst[1]), inst[2], inst[3])
+		else
+			str = string.format("%s%d:\t%s %s %s\n", str, i, find_key(op_code, inst[1]), inst[2], inst[3])
+		end
+	end
+	return str
+end
+
+local function dump_match(result)
+	local str = ""
+	if not result then
+		return "No match"
+	end
+	for i=0,#result,1 do
+		local v = result[i]
+		str = string.format("%s$%d:\t%s\t%d\t%d\n", str,i,v.match, v.s, v.e)
 	end
 	return str
 end
@@ -179,7 +198,11 @@ local function build_tree(node_list)
 	return s[1]
 end
 
---Parse the regex input into syntax tree.
+--[[
+Parse the regex input into syntax tree. 
+As look ahead is not implemented, there is no precedence to different operators.
+All the operator associate from left to right.
+]]--
 local function parse(input)
 	local s  = stack.new_stack()
 	--node list is built such that the node appears in reverse polish notation.
@@ -236,11 +259,13 @@ local function compile(ast)
 			return first
 		elseif node.type == node_type.GROUP then
 			local program = {}
+			local old_gc  = group_count
 			program[1] = {op_code.SAVE, group_count*2+1}
+			group_count = group_count+1
 			local sub = _compile(node.left)
 			merge(program, sub)
-			program[#program+1] = {op_code.SAVE, group_count*2+2}
-			group_count = group_count+1
+			program[#program+1] = {op_code.SAVE, old_gc*2+2}
+			
 			return program
 		elseif node.type == node_type.POST then
 			local program = {}
@@ -252,7 +277,10 @@ local function compile(ast)
 				table.insert(program, #program+1, {op_code.BRANCH, 1, #sub+1})
 				merge(program, sub)
 			elseif node.data == "*" then
-				table.insert(program, #program+1, {op_code.BRANCH, 0, #sub+1})
+				table.insert(program, #program+1, {op_code.BRANCH, 1, #sub+2})
+				merge(program, sub)
+				table.insert(program, #program+1, {op_code.BRANCH, -#sub, 1})
+				
 			else
 				error("Unknown symbol for POSTFIX token. ".. node.data)
 			end
@@ -271,9 +299,58 @@ local function compile(ast)
 		end
 	end
 
+	--add a group node on top
+	ast = {["type"]=node_type.GROUP, ["left"]=ast}
 	local program = _compile(ast)
 	table.insert(program, #program+1, {op_code.ACCEPT})
 	return program
+end
+
+local function thread_create()
+	return {["pc"]=1, ["sub"]={}, ["sp"]=1}
+end
+
+local function thread_copy(t) 
+	local new_t = thread_create()
+	new_t.pc = t.pc
+	new_t.sp = t.sp
+	for k,v in pairs(t.sub) do
+		new_t.sub[k] = v
+	end
+	return new_t
+end
+
+local function thread_add(program, thread, input, list)
+	local c = string.sub(input, thread.sp, thread.sp)
+	local inst = program[thread.pc]
+	if inst[1] == op_code.ANY then
+		thread.pc = thread.pc+1
+		thread.sp = thread.sp+1
+		table.insert(list, #list+1, thread)
+	elseif inst[1] == op_code.BRANCH then
+		if inst[3] then			--two branches
+			--first
+			local new_thread = thread_copy(thread)
+			new_thread.pc = new_thread.pc + inst[2]
+			table.insert(list, #list+1, new_thread)
+			--second
+			thread.pc = thread.pc+inst[3]
+			table.insert(list, #list+1, thread)
+		else					--one branch, same as jmp
+			thread.pc = thread.pc+inst[2]
+			table.insert(list, #list+1, thread)
+		end
+	elseif inst[1] == op_code.SAVE then
+		thread.pc = thread.pc+1
+		thread.sub[inst[2]] = thread.sp
+		table.insert(list, #list+1, thread)
+	elseif inst[1] == op_code.ACCEPT then
+		return true
+	else
+		error("Unknown op_code " .. inst[1])
+	end
+	
+	return false
 end
 
 function m.full_match(regex, input)
@@ -287,16 +364,119 @@ function m.full_match(regex, input)
 		error("Bad input, regex")
 	end
 	
+	local clist = {}
+	
+	table.insert(clist, 1, thread_create())
+	local matched = false
+	local matched_sub = 0
+	while #clist ~= 0 do
+		local nlist = {}
+		for j=1,#clist,1 do
+			local inst = program[clist[j].pc]
+			local c = string.sub(input, clist[j].sp, clist[j].sp)
+			if inst[1] == op_code.CHAR then
+				if inst[2] == c then
+					clist[j].pc = clist[j].pc+1
+					clist[j].sp = clist[j].sp+1
+					table.insert(nlist, #nlist+1, clist[j])
+				end
+			elseif thread_add(program, clist[j], input, nlist) then
+				local match_thread = clist[j]
+				--Check whether thats a full match or not
+				if match_thread.sub[1] == 1 and match_thread.sub[2] == #input+1 then
+					matched = true
+					matched_sub = match_thread.sub
+					assert(#matched_sub%2 == 0)
+					break
+				end
+			end
+		end
+		if matched then
+			break
+		end
+		clist = nlist
+	end
+
+	if matched then
+		local result = {}
+		for i=1,#matched_sub/2,1 do
+			result[i-1] = {match = string.sub(input, matched_sub[i*2-1], matched_sub[i*2]-1), 
+						 s = matched_sub[i*2-1], e =  matched_sub[i*2]-1}
+		end
+		return result
+	else
+		return nil
+	end
 end
 
-function m.partial_math(regex, input)
-	--stub
+function m.partial_match(regex, input)
+	local program = 0
+	if type(regex) == "string" then
+		local ast = parse(regex)
+		program = compile(ast)
+	elseif type(regex) == "table" then
+		program = regex
+	else
+		error("Bad input, regex")
+	end
+	
+	local clist = {}
+	
+	table.insert(clist, 1, thread_create())
+	local matched = false
+	local matched_sub = 0
+	while #clist ~= 0 do
+		local nlist = {}
+		for j=1,#clist,1 do
+			local inst = program[clist[j].pc]
+			local c = string.sub(input, clist[j].sp, clist[j].sp)
+			if inst[1] == op_code.CHAR then
+				if inst[2] == c then
+					clist[j].pc = clist[j].pc+1
+					clist[j].sp = clist[j].sp+1
+					table.insert(nlist, #nlist+1, clist[j])
+				elseif clist[j].sp < #input then			--Cannot match, start over but keep sp increased
+					clist[j].pc = 1
+					clist[j].sub = {}
+					clist[j].sp = clist[j].sp+1
+					table.insert(nlist, #nlist+1, clist[j])
+				end
+			elseif thread_add(program, clist[j], input, nlist) then
+				local match_thread = clist[j]
+				matched = true
+				matched_sub = match_thread.sub
+				assert(#matched_sub%2 == 0)
+				break
+			end
+		end
+		if matched then
+			break
+		end
+		clist = nlist
+	end
+
+	if matched then
+		local result = {}
+		for i=1,#matched_sub/2,1 do
+			result[i-1] = {match = string.sub(input, matched_sub[i*2-1], matched_sub[i*2]-1), 
+						 s = matched_sub[i*2-1], e =  matched_sub[i*2]-1}
+		end
+		return result
+	else
+		return nil
+	end
 end
 
 --test code, delete later.
-local ast = parse("(a+)|(b|c)")
+local ast = parse("(c|b)(b*)")
+print("Tree:")
+print(dump_tree(ast))
 local program = compile(ast)
+print("Program:")
 print(dump_program(program))
+local result = m.partial_match(program, "bcbbb")
+print("Result:")
+print(dump_match(result))
 
 --return the module
 return m
