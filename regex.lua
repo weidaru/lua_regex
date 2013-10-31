@@ -420,39 +420,45 @@ function m.partial_match(regex, input)
 		error("Bad input, regex")
 	end
 	
-	local clist = {}
 	
-	table.insert(clist, 1, thread_create())
 	local matched = false
 	local matched_sub = 0
-	while #clist ~= 0 do
-		local nlist = {}
-		for j=1,#clist,1 do
-			local inst = program[clist[j].pc]
-			local c = string.sub(input, clist[j].sp, clist[j].sp)
-			if inst[1] == op_code.CHAR then
-				if inst[2] == c then
-					clist[j].pc = clist[j].pc+1
-					clist[j].sp = clist[j].sp+1
-					table.insert(nlist, #nlist+1, clist[j])
-				elseif clist[j].sp < #input then			--Cannot match, start over but keep sp increased
-					clist[j].pc = 1
-					clist[j].sub = {}
-					clist[j].sp = clist[j].sp+1
-					table.insert(nlist, #nlist+1, clist[j])
+	for i=1,#input,1 do 
+		local clist = {}
+		table.insert(clist, 1, thread_create())
+		clist[1].sp = i
+		while #clist ~= 0 do
+			local nlist = {}
+			for j=1,#clist,1 do
+				local inst = program[clist[j].pc]
+				local c = string.sub(input, clist[j].sp, clist[j].sp)
+				if inst[1] == op_code.CHAR then
+					if inst[2] == c then
+						clist[j].pc = clist[j].pc+1
+						clist[j].sp = clist[j].sp+1
+						table.insert(nlist, #nlist+1, clist[j])
+					elseif clist[j].sp < #input then			--Cannot match, start over but keep sp increased
+						clist[j].pc = 1
+						clist[j].sub = {}
+						clist[j].sp = clist[j].sp+1
+						table.insert(nlist, #nlist+1, clist[j])
+					end
+				elseif thread_add(program, clist[j], input, nlist) then
+					local match_thread = clist[j]
+					matched = true
+					matched_sub = match_thread.sub
+					assert(#matched_sub%2 == 0)
+					break
 				end
-			elseif thread_add(program, clist[j], input, nlist) then
-				local match_thread = clist[j]
-				matched = true
-				matched_sub = match_thread.sub
-				assert(#matched_sub%2 == 0)
+			end
+			if matched then
 				break
 			end
+			clist = nlist
 		end
 		if matched then
 			break
 		end
-		clist = nlist
 	end
 
 	if matched then
@@ -468,13 +474,13 @@ function m.partial_match(regex, input)
 end
 
 --test code, delete later.
-local ast = parse("(c|b)(b*)")
+local ast = parse("ab")
 print("Tree:")
 print(dump_tree(ast))
 local program = compile(ast)
 print("Program:")
 print(dump_program(program))
-local result = m.partial_match(program, "bcbbb")
+local result = m.partial_match(program, "aab")
 print("Result:")
 print(dump_match(result))
 
